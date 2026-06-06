@@ -8,6 +8,7 @@
 //
 
 #include <stdio.h>
+#include <string.h>
 
 #include "pico/stdlib.h"
 #include "pico/rand.h"
@@ -17,8 +18,12 @@
 
 #include "drivers/keyboard.h"
 #include "drivers/audio.h"
+#include "drivers/fat32.h"
+#include "drivers/lcd.h"
 
 #include "game_api.h"
+
+#define SAVES_DIR "/saves"
 
 //
 //  Helpers
@@ -132,6 +137,90 @@ static int l_reset(lua_State *L)
 {
     (void)L;
     printf("\033[0m");
+    fflush(stdout);
+    return 0;
+}
+
+// pc.size() — return the screen size as two values: columns, rows.
+static int l_size(lua_State *L)
+{
+    lua_pushinteger(L, lcd_get_columns());
+    lua_pushinteger(L, ROWS);
+    return 2;
+}
+
+// pc.cursor(on) — show (true) or hide (false) the text cursor.
+static int l_cursor(lua_State *L)
+{
+    printf(lua_toboolean(L, 1) ? "\033[?25h" : "\033[?25l");
+    fflush(stdout);
+    return 0;
+}
+
+// pc.center(y, text) — print text horizontally centred on row y (1-based).
+static int l_center(lua_State *L)
+{
+    int y = (int)luaL_checkinteger(L, 1);
+    size_t len;
+    const char *s = luaL_checklstring(L, 2, &len);
+
+    int cols = lcd_get_columns();
+    int x = (cols - (int)len) / 2 + 1;
+    if (x < 1)
+    {
+        x = 1;
+    }
+    printf("\033[%d;%dH", y, x);
+    fwrite(s, 1, len, stdout);
+    fflush(stdout);
+    return 0;
+}
+
+// pc.box(x, y, w, h) — draw a w-by-h box with its top-left cell at (x, y),
+// using the display's DEC line-drawing characters. Only the border is
+// drawn; the interior is left untouched.
+static int l_box(lua_State *L)
+{
+    int x = (int)luaL_checkinteger(L, 1);
+    int y = (int)luaL_checkinteger(L, 2);
+    int w = (int)luaL_checkinteger(L, 3);
+    int h = (int)luaL_checkinteger(L, 4);
+    if (w < 2 || h < 2)
+    {
+        return 0; // too small to have a border
+    }
+
+    // Writing the screen's very last cell (bottom row, last column) wraps
+    // the cursor and scrolls the whole display up one line. So when the box
+    // is flush to the bottom-right corner, we leave that single corner cell
+    // unwritten. (The top-right corner wraps too, but does not scroll.)
+    bool corner_clips = (y + h - 1 >= ROWS) && (x + w - 1 >= lcd_get_columns());
+
+    printf("\033(0"); // switch G0 to the DEC special graphics (line) set
+
+    // Top edge:  l q...q k
+    printf("\033[%d;%dH", y, x);
+    putchar('l');
+    for (int i = 0; i < w - 2; i++) putchar('q');
+    putchar('k');
+
+    // Vertical sides
+    for (int r = y + 1; r < y + h - 1; r++)
+    {
+        printf("\033[%d;%dHx", r, x);
+        printf("\033[%d;%dHx", r, x + w - 1);
+    }
+
+    // Bottom edge:  m q...q j
+    printf("\033[%d;%dH", y + h - 1, x);
+    putchar('m');
+    for (int i = 0; i < w - 2; i++) putchar('q');
+    if (!corner_clips)
+    {
+        putchar('j');
+    }
+
+    printf("\033(B"); // restore G0 to ASCII
     fflush(stdout);
     return 0;
 }
@@ -304,6 +393,135 @@ static int l_random(lua_State *L)
 }
 
 //
+//  Save files (stored as files under /saves on the SD card)
+//
+
+// A save name must be a plain filename — no path separators that could
+// escape the saves directory.
+static bool valid_save_name(const char *name)
+{
+    return name != NULL && name[0] != '\0' && strpbrk(name, "/\\") == NULL;
+}
+
+// Create /saves if it does not already exist.
+static void ensure_saves_dir(void)
+{
+    fat32_file_t dir;
+    if (fat32_dir_create(&dir, SAVES_DIR) == FAT32_OK)
+    {
+        fat32_close(&dir);
+    }
+    // Any error (most commonly "already exists") is ignored here; a real
+    // problem will surface when the save file itself is opened.
+}
+
+// pc.save(name, data) — write the string data to /saves/<name>.
+// Returns true on success, false otherwise.
+static int l_save(lua_State *L)
+{
+    const char *name = luaL_checkstring(L, 1);
+    size_t len;
+    const char *data = luaL_checklstring(L, 2, &len);
+
+    if (!valid_save_name(name))
+    {
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+
+    ensure_saves_dir();
+
+    char path[FAT32_MAX_PATH_LEN];
+    snprintf(path, sizeof(path), SAVES_DIR "/%s", name);
+
+    FILE *fp = fopen(path, "wb");
+    if (fp == NULL)
+    {
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+    size_t written = fwrite(data, 1, len, fp);
+    fclose(fp);
+
+    lua_pushboolean(L, written == len);
+    return 1;
+}
+
+// pc.load(name) — return the contents of /saves/<name> as a string,
+// or nil if it does not exist or cannot be read.
+static int l_load(lua_State *L)
+{
+    const char *name = luaL_checkstring(L, 1);
+    if (!valid_save_name(name))
+    {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    char path[FAT32_MAX_PATH_LEN];
+    snprintf(path, sizeof(path), SAVES_DIR "/%s", name);
+
+    FILE *fp = fopen(path, "rb");
+    if (fp == NULL)
+    {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    fseek(fp, 0, SEEK_END);
+    long size = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    if (size < 0)
+    {
+        fclose(fp);
+        lua_pushnil(L);
+        return 1;
+    }
+
+    luaL_Buffer b;
+    char *p = luaL_buffinitsize(L, &b, (size_t)size);
+    size_t nread = fread(p, 1, (size_t)size, fp);
+    fclose(fp);
+    luaL_pushresultsize(&b, nread);
+    return 1;
+}
+
+// pc.saves() — return an array (table) of the save file names in /saves.
+static int l_saves(lua_State *L)
+{
+    lua_newtable(L);
+
+    fat32_file_t dir;
+    fat32_entry_t entry;
+    if (fat32_open(&dir, SAVES_DIR) != FAT32_OK)
+    {
+        return 1; // no /saves yet: return an empty table
+    }
+
+    int n = 0;
+    while (true)
+    {
+        if (fat32_dir_read(&dir, &entry) != FAT32_OK)
+        {
+            break;
+        }
+        if (entry.filename[0] == '\0')
+        {
+            break;
+        }
+        if (entry.attr & (FAT32_ATTR_DIRECTORY | FAT32_ATTR_VOLUME_ID |
+                          FAT32_ATTR_HIDDEN | FAT32_ATTR_SYSTEM))
+        {
+            continue;
+        }
+        lua_pushstring(L, entry.filename);
+        lua_rawseti(L, -2, ++n);
+    }
+    fat32_close(&dir);
+    return 1;
+}
+
+//
 //  Registration
 //
 
@@ -316,6 +534,10 @@ static const luaL_Reg pc_funcs[] = {
     {"fg", l_fg},
     {"bg", l_bg},
     {"reset", l_reset},
+    {"size", l_size},
+    {"cursor", l_cursor},
+    {"center", l_center},
+    {"box", l_box},
     {"getkey", l_getkey},
     {"keyhit", l_keyhit},
     {"input", l_input},
@@ -326,6 +548,9 @@ static const luaL_Reg pc_funcs[] = {
     {"sleep", l_sleep},
     {"time", l_time},
     {"random", l_random},
+    {"save", l_save},
+    {"load", l_load},
+    {"saves", l_saves},
     {NULL, NULL}};
 
 // A named integer constant to set on the pc table.

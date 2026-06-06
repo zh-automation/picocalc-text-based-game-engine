@@ -93,10 +93,12 @@ end
 | Category | Functions |
 |---|---|
 | Screen   | `pc.cls()`, `pc.print(...)`, `pc.write(...)`, `pc.at(x,y)`, `pc.color(fg[,bg])`, `pc.fg(r,g,b)`, `pc.bg(r,g,b)`, `pc.reset()` |
+| Layout   | `pc.size()` (returns columns, rows), `pc.cursor(on)`, `pc.center(y,text)`, `pc.box(x,y,w,h)` |
 | Keyboard | `pc.getkey()` (blocks, returns a key code), `pc.keyhit()`, `pc.input([prompt])` (reads a line) |
 | Audio    | `pc.beep()`, `pc.tone(freq[,ms])`, `pc.sound(freq)`, `pc.stop()` |
 | Timing   | `pc.sleep(ms)`, `pc.time()` (ms since boot) |
 | Random   | `pc.random()` / `pc.random(m)` / `pc.random(m,n)` (hardware RNG, no seeding) |
+| Saves    | `pc.save(name, data)` (string -> `/saves/<name>`), `pc.load(name)` (string or nil), `pc.saves()` (list of names) |
 
 Constants on `pc`: keys `KEY_UP/DOWN/LEFT/RIGHT/ENTER/ESC/SPACE/BACKSPACE/TAB`
 and `KEY_F1`–`KEY_F10`; colours `BLACK`, `RED`, `GREEN`, `YELLOW`, `BLUE`,

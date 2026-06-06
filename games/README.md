@@ -7,7 +7,7 @@ Lua game scripts for the PicoCalc Lua Game Engine.
 Copy the `.lua` files in this folder to a `/games` directory in the root of
 a FAT32-formatted SD card:
 
-```
+```text
 SD card root/
 └── games/
     ├── hello.lua
@@ -24,12 +24,14 @@ script finishes.
 Scripts get a global `pc` table:
 
 | Category | Functions |
-|---|---|
+| --- | --- |
 | Screen   | `pc.cls()`, `pc.print(...)`, `pc.write(...)`, `pc.at(x,y)`, `pc.color(fg[,bg])`, `pc.fg(r,g,b)`, `pc.bg(r,g,b)`, `pc.reset()` |
+| Layout   | `pc.size()` (returns columns, rows), `pc.cursor(on)`, `pc.center(y,text)`, `pc.box(x,y,w,h)` |
 | Keyboard | `pc.getkey()` (blocks, returns a key code), `pc.keyhit()`, `pc.input([prompt])` (reads a line) |
 | Audio    | `pc.beep()`, `pc.tone(freq[,ms])`, `pc.sound(freq)`, `pc.stop()` |
 | Timing   | `pc.sleep(ms)`, `pc.time()` (ms since boot) |
 | Random   | `pc.random()` / `pc.random(m)` / `pc.random(m,n)` (hardware RNG) |
+| Saves    | `pc.save(name, data)` (string -> `/saves/<name>`), `pc.load(name)` (string or nil), `pc.saves()` (list of names) |
 
 Constants: `pc.KEY_UP/DOWN/LEFT/RIGHT/ENTER/ESC/SPACE/BACKSPACE/TAB`,
 `pc.KEY_F1`–`pc.KEY_F10`, and colours `pc.BLACK`, `pc.RED`, `pc.GREEN`,
