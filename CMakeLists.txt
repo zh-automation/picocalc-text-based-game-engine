@@ -55,12 +55,8 @@ add_executable(picocalc-text-starter
         main.c
         game_api.c
         game_api.h
-        commands.c
-        commands.h
-        songs.c
-        songs.h
-        tests.c
-        tests.h
+        launcher.c
+        launcher.h
         drivers/audio.c
         drivers/audio.h
         drivers/clib.c

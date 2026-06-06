@@ -10,6 +10,7 @@
 #include <stdio.h>
 
 #include "pico/stdlib.h"
+#include "pico/rand.h"
 
 #include "lua.h"
 #include "lauxlib.h"
@@ -155,6 +156,48 @@ static int l_keyhit(lua_State *L)
     return 1;
 }
 
+// pc.input([prompt]) — print the optional prompt, then read a line of text
+// from the keyboard (with echo and backspace editing) and return it as a
+// string. Enter ends the line.
+static int l_input(lua_State *L)
+{
+    if (!lua_isnoneornil(L, 1))
+    {
+        size_t len;
+        const char *p = luaL_tolstring(L, 1, &len);
+        fwrite(p, 1, len, stdout);
+        lua_pop(L, 1);
+    }
+    fflush(stdout);
+
+    char buf[128];
+    int idx = 0;
+    while (true)
+    {
+        char c = keyboard_get_key();
+        if (c == KEY_RETURN || c == '\n')
+        {
+            putchar('\n');
+            break;
+        }
+        else if ((c == KEY_BACKSPACE || c == 0x7F) && idx > 0)
+        {
+            idx--;
+            printf("\b \b");
+        }
+        else if ((unsigned char)c >= 0x20 && (unsigned char)c < 0x7F &&
+                 idx < (int)sizeof(buf) - 1)
+        {
+            buf[idx++] = c;
+            putchar(c);
+        }
+        fflush(stdout);
+    }
+    buf[idx] = '\0';
+    lua_pushstring(L, buf);
+    return 1;
+}
+
 //
 //  Audio
 //
@@ -216,6 +259,50 @@ static int l_sleep(lua_State *L)
     return 0;
 }
 
+// pc.time() — milliseconds elapsed since the device booted.
+static int l_time(lua_State *L)
+{
+    lua_pushinteger(L, (lua_Integer)to_ms_since_boot(get_absolute_time()));
+    return 1;
+}
+
+// pc.random([m [, n]]) — hardware random numbers.
+//   pc.random()      -> float in [0, 1)
+//   pc.random(m)     -> integer in [1, m]
+//   pc.random(m, n)  -> integer in [m, n]
+// Backed by the RP2350 hardware RNG, so no seeding is required.
+static int l_random(lua_State *L)
+{
+    uint32_t r = get_rand_32();
+    int argc = lua_gettop(L);
+
+    if (argc == 0)
+    {
+        lua_pushnumber(L, (lua_Number)r / 4294967296.0); // 2^32
+    }
+    else if (argc == 1)
+    {
+        lua_Integer m = luaL_checkinteger(L, 1);
+        if (m < 1)
+        {
+            return luaL_error(L, "pc.random: upper bound must be >= 1");
+        }
+        lua_pushinteger(L, (lua_Integer)(r % (uint32_t)m) + 1);
+    }
+    else
+    {
+        lua_Integer lo = luaL_checkinteger(L, 1);
+        lua_Integer hi = luaL_checkinteger(L, 2);
+        if (hi < lo)
+        {
+            return luaL_error(L, "pc.random: empty range (%d > %d)", (int)lo, (int)hi);
+        }
+        uint32_t span = (uint32_t)(hi - lo + 1);
+        lua_pushinteger(L, lo + (lua_Integer)(r % span));
+    }
+    return 1;
+}
+
 //
 //  Registration
 //
@@ -231,11 +318,14 @@ static const luaL_Reg pc_funcs[] = {
     {"reset", l_reset},
     {"getkey", l_getkey},
     {"keyhit", l_keyhit},
+    {"input", l_input},
     {"beep", l_beep},
     {"tone", l_tone},
     {"sound", l_sound},
     {"stop", l_stop},
     {"sleep", l_sleep},
+    {"time", l_time},
+    {"random", l_random},
     {NULL, NULL}};
 
 // A named integer constant to set on the pc table.
