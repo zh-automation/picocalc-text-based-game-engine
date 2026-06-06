@@ -13,6 +13,7 @@ built on top of it.
 - [Prototypes vs. state](#prototypes-vs-state)
 - [Authoring content](#authoring-content)
 - [Verbs and parsing](#verbs-and-parsing)
+- [Two-object verbs and reactions](#two-object-verbs-and-reactions)
 - [Dialog trees](#dialog-trees)
 - [Behavior over time: ticks and flags](#behavior-over-time-ticks-and-flags)
 - [Saving and soft-locks](#saving-and-soft-locks)
@@ -199,21 +200,72 @@ Typed input becomes a `{ verb, noun, tool }` command. Synonyms are folded to a
 - `talk`/`speak`/`ask` → `talk`, etc.
 
 Directions fold too (`n`/`north`, `u`/`up`/`ascend`...), and movement verbs work
-both bare (`north`) and with a verb (`go north`). Filler words (`the`, `to`,
-`at`, `in`...) are ignored, and `with <x>` (or `using <x>`) supplies the tool.
+both bare (`north`) and with a verb (`go north`).
+
+Only `the`/`a`/`an` are true filler (ignored). Everything else is significant:
+
+- The first plain word after the verb is the **direct object** (`noun`).
+- A **preposition** (`with`, `using`, `at`, `to`, `on`, `into`, `in`) introduces
+  the **indirect object** — stored in `tool`. So `unlock door with key` →
+  `noun=door, tool=key`, and `throw bread at prisoner` → `noun=bread,
+  tool=prisoner`.
+- A *leading* preposition means its object is the thing acted on: `talk to
+  prisoner` → `noun=prisoner` (no separate target). `look at door` →
+  `noun=door`.
+
 So all of these parse correctly:
 
 ```
 unlock the door with the key
+throw bread at prisoner
 talk to prisoner
 go up
-n
 ```
 
 To add a new verb, add its spelling(s) to `verb_canon` in
 [`engine.lua`](../src/engine.lua), then give entities a handler under the
 canonical name. Nouns are matched to entities by display `name` or by `id`,
 restricted to what's reachable.
+
+## Two-object verbs and reactions
+
+Many verbs involve two things — a direct object and an indirect object (the
+`tool`): `unlock door with key`, `throw bread at prisoner`, `give coin to
+guard`. There are two ways those resolve, in this order:
+
+1. **The target reacts.** If the indirect object has a `react` entry for the
+   verb, it runs and *fully handles* the action — the direct object's verb is
+   skipped. `react` is a map of verb → `function(self, other)`, where `self` is
+   the target and `other` is the direct object (the thing thrown/given/used).
+
+   ```lua
+   g.npc {
+     id = "prisoner", location = "hall", name = "prisoner",
+     react = {
+       throw = function(self, projectile)
+         projectile.location = g.here()        -- it bounces off and lands here
+         pc.print('The prisoner swats it away. "Oi! Not me!"')
+       end,
+     },
+     dialog = { ... },
+   }
+   ```
+
+   Now `throw bread at prisoner` triggers this instead of the bread's default
+   "out the window" throw. Any entity can carry a `react` table; it's how you
+   handle "weird interactions" without special-casing the engine.
+
+2. **The direct object's verb runs**, receiving the indirect object as its
+   second argument: `handler(self, tool)`. This is how `door.unlock(self, key)`
+   reads the key. If the target had no matching `react`, this is what happens.
+
+So with no target (`throw bread`) you get the item's own `throw`; with a target
+that doesn't care (`unlock door with key` — keys have no `react`) you get the
+direct object's verb and the tool; with a target that *does* care (`throw bread
+at prisoner`) the target's reaction wins.
+
+> Reactions are for being the **target** of an action involving another object.
+> Single-object oddities (`push statue`) are just ordinary verbs on that object.
 
 ## Dialog trees
 

@@ -18,16 +18,11 @@ g.room {
 g.room {
    id = "hall",
    desc = "A torchlit hall. A spiral stair winds upward; a low door leads back down.",
-   exits = { down = "cell", up = "landing" },
-}
-
-g.container {
-   id = "chest", name = "chest", location = "cell",
-   desc = function(e) return e.is_open and "A wooden chest, lid thrown open." or "A wooden chest, lid shut." end,
+   exits = { south = "cell", up = "landing" },
 }
 
 g.item {
-   id = "key", name = "key", location = "chest",   -- starts INSIDE the chest
+   id = "key", name = "key", location = "bread",   -- baked in the bread
    desc = "A small iron key, cold to the touch.",
 }
 
@@ -39,11 +34,26 @@ g.door {
 
 g.item {
    id = "bread", name = "bread", location = "cell",
-   desc = "A stale crust of bread.",
+   state = { is_open = false},
+   desc = function(e)
+      if e.is_open then return "A hard crust of stale bread, torn open." end
+      return "A hard and oddly heavy crust of stale bread." end,
    verbs = {
-      eat = function(e)
-         e.location = nil                  -- consumed -> in no container -> gone
-         pc.print("You wolf down the bread. Gone now -- hope you didn't need it.")
+      open = function(self)
+         self.is_open = true
+         if #g.contents(self.id) > 0 then
+            pc.print("You tear the bread open revealing a key! Weird.")
+         else
+            pc.print("You continue to tear into the bread. Alas, there is nothing left to find")
+         end
+      end,
+      eat = function(self)
+         if #g.contents(self.id) > 0 then
+            pc.print("You bite the hard loaf, but something even harder is inside")
+            return
+         end
+         self.location = nil                  -- consumed -> in no container -> gone
+         pc.print("You choke down the bread. It was less than satisfying.")
       end,
    },
 }
@@ -51,6 +61,14 @@ g.item {
 g.npc {
    id = "prisoner", name = "prisoner", location = "hall",
    desc = "A gaunt fellow prisoner slumped against the wall.",
+   -- react[verb] fires when the prisoner is the TARGET of a verb ("... at/to prisoner").
+   -- self = the prisoner, projectile = the thing thrown.
+   react = {
+      throw = function(self, projectile)
+         projectile.location = g.here()      -- it bounces off and lands at your feet
+         pc.print('The prisoner flinches and swats it away. "Oi! Throw that at the goblin, not me!"')
+      end,
+   },
    dialog = {
       start = {
          text = "You got out of your cell? That goblin on the stair won't let anyone past, though.",

@@ -37,9 +37,12 @@ local verb_canon = {              -- action synonym -> canonical verb
    attack = "attack", hit = "attack", fight = "attack",
    use = "use", read = "read",
 }
-local filler = {                  -- little words ignored in commands
-   the = true, a = true, an = true, to = true, at = true,
-   on = true, into = true, ["in"] = true,    -- "in" is a keyword, so quote it
+local filler = {                  -- little words ignored entirely
+   the = true, a = true, an = true,
+}
+local prep = {                    -- prepositions that introduce a 2nd object
+   with = true, using = true, at = true, to = true,
+   on = true, onto = true, into = true, ["in"] = true,   -- "in" is a keyword, so quote it
 }
 
 -- ---------------------------------------------------------------------------
@@ -106,7 +109,7 @@ local function cmd_parse(input)
       local i = 2
       while i <= #words do
          local w = words[i]
-         if w == "with" or w == "using" then
+         if prep[w] then                       -- "with/at/to/on/into..." -> the 2nd object
             i = i + 1
             while i <= #words and filler[words[i]] do i = i + 1 end
             cmd.tool = words[i]; i = i + 1
@@ -117,6 +120,9 @@ local function cmd_parse(input)
             i = i + 1
          end
       end
+      -- a leading preposition ("talk to prisoner") means the prepositional
+      -- object IS the thing acted on, not a separate target
+      if not cmd.noun then cmd.noun = cmd.tool; cmd.tool = nil end
       return cmd
    end
 
@@ -242,13 +248,26 @@ local function apply(cmd)
       return
    end
    local e = E(id)
+
+   -- resolve the indirect object (the "with/at/to" target), if any
+   local other_id = cmd.tool and find(cmd.tool)
+   local other = other_id and E(other_id) or nil
+
+   -- the TARGET reacts first: e.g. "throw bread at prisoner" -> prisoner.react.throw
+   if other then
+      local react = P(other).react
+      if react and react[cmd.verb] then
+         react[cmd.verb](other, e)                  -- self = target, other = the item/tool
+         return                                      -- the reaction fully handled it
+      end
+   end
+
    local handler = P(e).verbs[cmd.verb]
    if not handler then
       pc.print("You can't " .. cmd.verb .. " the " .. P(e).name .. ".")
       return
    end
-   local tool_id = cmd.tool and find(cmd.tool)
-   handler(e, tool_id and E(tool_id) or nil)        -- handler(self, tool)
+   handler(e, other)                                 -- handler(self, tool)
 end
 
 local function tick_all()
@@ -308,14 +327,14 @@ local item_verbs = {
 
 local function room(spec)
    register(spec.id,
-      { name = spec.name or spec.id, desc = spec.desc, verbs = spec.verbs or {} },
+      { name = spec.name or spec.id, desc = spec.desc, verbs = spec.verbs or {}, react = spec.react },
       nil,
       { exits = spec.exits or {}, win = spec.win })
 end
 
 local function item(spec)
    register(spec.id,
-      { name = spec.name or spec.id, desc = spec.desc, verbs = merge(item_verbs, spec.verbs) },
+      { name = spec.name or spec.id, desc = spec.desc, verbs = merge(item_verbs, spec.verbs), react = spec.react },
       spec.location, spec.state or {})
 end
 
@@ -336,7 +355,7 @@ local function container(spec)
       end,
       close = function(e) e.is_open = false; pc.print("You close the " .. P(e).name .. ".") end,
    }, spec.verbs)
-   register(spec.id, { name = spec.name or "container", desc = spec.desc, verbs = verbs },
+   register(spec.id, { name = spec.name or "container", desc = spec.desc, verbs = verbs, react = spec.react },
             spec.location, merge({ is_open = false, locked = spec.locked or false }, spec.state))
 end
 
@@ -372,7 +391,7 @@ local function door(spec)
       elseif e.locked then return "A heavy door blocks the way " .. leads.dir .. ", firmly locked."
       else return "A heavy door, unlocked but still shut." end
    end
-   register(spec.id, { name = spec.name or "door", desc = desc, verbs = verbs },
+   register(spec.id, { name = spec.name or "door", desc = desc, verbs = verbs, react = spec.react },
             spec.location, { locked = true, is_open = false })
 end
 
@@ -381,7 +400,7 @@ local function npc(spec)
       look = function(e) pc.print(text_of(e)) end,
       talk = function(e) run_dialog(e) end,
    }, spec.verbs)
-   register(spec.id, { name = spec.name, desc = spec.desc, verbs = verbs, dialog = spec.dialog },
+   register(spec.id, { name = spec.name, desc = spec.desc, verbs = verbs, dialog = spec.dialog, react = spec.react },
             spec.location, { dialog_node = "start" })
 end
 
@@ -390,7 +409,7 @@ local function enemy(spec)
       look   = function(e) pc.print(text_of(e)) end,
       attack = function(e) pc.print("The " .. P(e).name .. " is far too strong to fight head-on.") end,
    }, spec.verbs)
-   register(spec.id, { name = spec.name, desc = spec.desc, verbs = verbs, tick = spec.tick },
+   register(spec.id, { name = spec.name, desc = spec.desc, verbs = verbs, tick = spec.tick, react = spec.react },
             spec.location, merge({ guarding = spec.guarding }, spec.state))
 end
 
