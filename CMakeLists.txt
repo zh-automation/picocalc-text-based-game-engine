@@ -23,7 +23,7 @@ if (EXISTS ${picoVscode})
     include(${picoVscode})
 endif()
 # ====================================================================================
-set(PICO_BOARD pico CACHE STRING "Board type")
+set(PICO_BOARD pico2 CACHE STRING "Board type")
 
 # Pull in Raspberry Pi Pico SDK (must be before project)
 include(pico_sdk_import.cmake)
@@ -32,6 +32,21 @@ project(picocalc-text-starter C CXX ASM)
 
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
+
+
+# == Embedded Lua 5.4 interpreter (vendored in lua/) ==
+# Built as a static library with warnings relaxed: this is third-party
+# source and should not be held to the project's -Wall -Werror policy.
+# liolib.c / loslib.c / loadlib.c are excluded because they depend on OS
+# facilities (dynamic loading, system(), file streams) the PicoCalc lacks.
+file(GLOB LUA_SOURCES ${CMAKE_CURRENT_LIST_DIR}/lua/*.c)
+list(REMOVE_ITEM LUA_SOURCES
+        ${CMAKE_CURRENT_LIST_DIR}/lua/liolib.c
+        ${CMAKE_CURRENT_LIST_DIR}/lua/loslib.c
+        ${CMAKE_CURRENT_LIST_DIR}/lua/loadlib.c)
+add_library(lua STATIC ${LUA_SOURCES})
+target_include_directories(lua PUBLIC ${CMAKE_CURRENT_LIST_DIR}/lua)
+target_compile_options(lua PRIVATE -w)
 
 
 # Add executable. Default name is the project name, version 0.1
@@ -103,6 +118,7 @@ target_link_libraries(picocalc-text-starter
         hardware_spi
         hardware_pio
         hardware_clocks
+        lua
         )
 
 pico_add_extra_outputs(picocalc-text-starter)

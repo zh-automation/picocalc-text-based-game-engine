@@ -8,7 +8,9 @@
 #include "drivers/keyboard.h"
 #include "drivers/onboard_led.h"
 
-#include "commands.h"
+#include "lua.h"
+#include "lauxlib.h"
+#include "lualib.h"
 
 bool power_off_requested = false;
 
@@ -59,7 +61,7 @@ void readline(char *buffer, size_t size)
 
 int main()
 {
-    char buffer[40];
+    char buffer[256];
 
     // Initialize the LED driver and set the LED callback
     // If the LED driver fails to initialize, we can still run the text starter
@@ -72,29 +74,41 @@ int main()
         display_set_led_callback(set_onboard_led);
     }
 
-    printf("\033c\033[1m\n Hello from the PicoCalc Text Starter!\033[0m\n\n");
-    printf("      Contributed to the community\n");
-    printf("            by Blair Leduc.\n\n");
-    printf("Type \033[4mhelp\033[0m for a list of commands.\n\n");
+    // Create the Lua interpreter and load the standard libraries.
+    lua_State *L = luaL_newstate();
+    if (L == NULL) {
+        printf("\033cFATAL: could not allocate Lua state (out of memory).\n");
+        while (true) { tight_loop_contents(); }
+    }
+    luaL_openlibs(L);
 
-    // A very simple REPL
-    printf("\033[qReady.\n");
+    printf("\033c\033[1m\n PicoCalc Lua Game Engine\033[0m\n\n");
+    printf("Lua %s.%s.%s\n\n", LUA_VERSION_MAJOR, LUA_VERSION_MINOR, LUA_VERSION_RELEASE);
+    printf("Type Lua at the prompt, e.g. \033[4mprint(\"hello\")\033[0m\n\n");
+
+    // A very simple Lua REPL: read a line, execute it as a Lua chunk,
+    // and report any compile/runtime error to the display.
+    printf("\033[q> ");
     while (true)
     {
         readline(buffer, sizeof(buffer));
         if (strlen(buffer) == 0)
         {
+            printf("> ");
             continue; // Skip empty input
         }
 
-        printf("\033[1q\n"); // Turn on the LED so the user knows input is being processed
+        printf("\033[1q"); // Turn on the LED so the user knows input is being processed
 
-        // Convert the input to lowercase for case-insensitive command matching
-        str_to_lower(buffer);
-        
-        run_command(buffer); // Call the command handler
+        // Load and run the line as a Lua chunk. luaL_dostring returns
+        // non-zero on error, leaving the error message on the stack.
+        if (luaL_dostring(L, buffer) != LUA_OK)
+        {
+            const char *msg = lua_tostring(L, -1);
+            printf("\033[31m%s\033[0m\n", msg ? msg : "(unknown error)");
+            lua_pop(L, 1); // remove the error message from the stack
+        }
 
-        printf("\033[q\nReady. %s\n", power_off_requested ? "(power off requested)" : ""); // Turn off the LED and prompt for input again
-        power_off_requested = false;
+        printf("\033[q> "); // Turn off the LED and prompt for input again
     }
 }
