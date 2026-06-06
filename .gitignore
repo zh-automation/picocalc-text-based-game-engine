@@ -57,3 +57,6 @@ dkms.conf
 build
 !.vscode/*
 .DS_Store
+
+# pc_stub.lua writes playtest saves here
+/saves/
