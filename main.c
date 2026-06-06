@@ -12,6 +12,8 @@
 #include "lauxlib.h"
 #include "lualib.h"
 
+#include "game_api.h"
+
 bool power_off_requested = false;
 
 void set_onboard_led(uint8_t led)
@@ -81,10 +83,11 @@ int main()
         while (true) { tight_loop_contents(); }
     }
     luaL_openlibs(L);
+    register_game_api(L); // expose the "pc" hardware API to scripts
 
     printf("\033c\033[1m\n PicoCalc Lua Game Engine\033[0m\n\n");
     printf("Lua %s.%s.%s\n\n", LUA_VERSION_MAJOR, LUA_VERSION_MINOR, LUA_VERSION_RELEASE);
-    printf("Type Lua at the prompt, e.g. \033[4mprint(\"hello\")\033[0m\n\n");
+    printf("Try: \033[4mpc.cls(); pc.color(pc.GREEN); pc.print(\"hi\")\033[0m\n\n");
 
     // A very simple Lua REPL: read a line, execute it as a Lua chunk,
     // and report any compile/runtime error to the display.

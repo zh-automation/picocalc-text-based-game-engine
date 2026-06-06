@@ -53,6 +53,8 @@ target_compile_options(lua PRIVATE -w)
 
 add_executable(picocalc-text-starter
         main.c
+        game_api.c
+        game_api.h
         commands.c
         commands.h
         songs.c
