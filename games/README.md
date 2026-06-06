@@ -21,6 +21,10 @@ script finishes.
 
 ## The `pc` game API
 
+New to writing games here? Read the
+[game development guide](../docs/game-development.md) for a full walkthrough.
+The table below is a quick reference.
+
 Scripts get a global `pc` table:
 
 | Category | Functions |

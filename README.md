@@ -74,6 +74,11 @@ A game is a Lua script that uses the global `pc` table. When the script
 returns, the launcher takes over again — so a game's main loop should exit on
 a quit key.
 
+> [!TIP]
+> For a full walkthrough — execution model, the complete `pc` API, input and
+> drawing patterns, saving progress, and gotchas — see the
+> [game development guide](docs/game-development.md).
+
 ```lua
 -- mygame.lua
 pc.cls()
