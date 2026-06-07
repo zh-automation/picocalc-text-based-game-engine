@@ -19,7 +19,7 @@ g.register("player", { name = "you", verbs = {} }, "cell", {})
 
 g.room {
    id = "cell",
-   desc = "A damp stone cell. A heavy door is set in the north wall.",
+   desc = "A damp stone cell. A heavy door is set in the north wall. A small, barred window allows a meager bit of light to shine into the cell.",
    exits = {},                  -- north appears only once the door is opened
 }
 g.room {
@@ -34,9 +34,36 @@ g.item {
 }
 
 g.door {
-   id = "door", name = "door", location = "cell",
+   id = "celldoor", name = "door", location = "cell",
    leads = { dir = "north", to = "hall", from = "cell" },
    -- key defaults to the item proto "key"
+}
+
+g.window {
+   id = "cellwindow", name = "window", location = "cell",
+   barred = true,                            -- permanent scenery: no key opens it, it never opens
+   overlooks = "void",                       -- you can still SEE through the bars (see void's glimpse)
+   -- The window is barred. react[verb] fires when the window is the TARGET of a
+   -- verb -- e.g. "push key through window" or "throw key at window" (push/shove
+   -- are parsed as throw). self = the window, projectile = the thing pushed.
+   -- Small items slip between the bars and fall into the void, unrecoverable.
+   react = {
+      throw = function(self, projectile)
+         projectile.location = "void"          -- the void is a fatal drop; nothing comes back
+         pc.print("You slip the " .. g.P(projectile).name ..
+                  " between the bars. It tumbles away into the dark below, gone for good.")
+      end,
+   },
+}
+
+g.room {
+   id = "void",
+   desc = "Beyond the bars is only open air -- a sheer drop down the tower's outer wall to the courtyard stones far, far below.",
+   -- the short version shown when peering through the cell window (see g.window overlooks)
+   glimpse = "open air, and a sheer drop down the tower wall to the courtyard far below.",
+   -- entering this room ends the game (see the `lose` handling in engine go()).
+   lose = "*** You squeeze past the bars and plummet from the tower. YOU DIED ***",
+   exits = {},
 }
 
 g.item {
@@ -51,12 +78,12 @@ g.item {
          if #g.contents(self.id) > 0 then
             pc.print("You tear the bread open revealing a key! Weird.")
          else
-            pc.print("You continue to tear into the bread. Alas, there is nothing left to find")
+            pc.print("You continue to tear into the bread. Alas, there is nothing left to find.")
          end
       end,
       eat = function(self)
          if #g.contents(self.id) > 0 then
-            pc.print("You bite the hard loaf, but something even harder is inside")
+            pc.print("You bite the hard loaf, but something even harder is inside.")
             return
          end
          self.location = nil                  -- consumed -> in no container -> gone
@@ -195,6 +222,7 @@ __modules["engine"] = function()
 -- ===========================================================================
 
 local M = {}                      -- the api we hand back at the bottom
+local sfx = require("sound")      -- action stingers (2-3 tone cues)
 
 -- ---------------------------------------------------------------------------
 -- 1. WORD TABLES (typed word -> canonical word; membership is an O(1) lookup)
@@ -215,6 +243,7 @@ local verb_canon = {              -- action synonym -> canonical verb
    take = "take", get = "take", grab = "take", pick = "take",
    drop = "drop",
    throw = "throw", toss = "throw", chuck = "throw",
+   push = "throw", shove = "throw", slip = "throw",   -- push/shove route through the same handler as throw
    open = "open", close = "close", shut = "close",
    unlock = "unlock", lock = "lock",
    eat = "eat", drink = "eat",
@@ -228,6 +257,7 @@ local filler = {                  -- little words ignored entirely
 local prep = {                    -- prepositions that introduce a 2nd object
    with = true, using = true, at = true, to = true,
    on = true, onto = true, into = true, ["in"] = true,   -- "in" is a keyword, so quote it
+   through = true, thru = true,                          -- "push X through window"
 }
 
 -- ---------------------------------------------------------------------------
@@ -328,6 +358,7 @@ local protos = {}
 local placements = {}
 local world = {}
 local running = true
+local game_over = false           -- set on win/lose so run() holds the final screen
 local SLOT = "ett.slot1"
 
 local function E(id)  return world.entities[id] end     -- entity row by id
@@ -339,12 +370,33 @@ local function text_of(e)
    if type(d) == "function" then return d(e) else return d end
 end
 
+-- a short "seen from a distance" view of a room (e.g. through a window): the
+-- author's `glimpse` text if set, otherwise just the first sentence of the
+-- full description, so the view is always limited rather than the whole room.
+local function glimpse_of(roomid)
+   local r = E(roomid)
+   if not r then return nil end
+   local g = P(r).glimpse
+   if g then return type(g) == "function" and g(r) or g end
+   local full = text_of(r)
+   return full:match("^[^.]*%.") or full          -- text up to (and incl.) the first period
+end
+
 local function contents(cid)
    local out = {}
    for id, e in pairs(world.entities) do
       if e.location == cid then out[#out + 1] = id end
    end
    return out
+end
+
+-- a carried item whose proto matches keyid, or nil. Lets locks be opened with
+-- "unlock <thing>" (no "with <key>") as long as the right key is in hand.
+local function held_key(keyid)
+   for _, id in ipairs(contents("player")) do
+      if E(id).proto == keyid then return E(id) end
+   end
+   return nil
 end
 
 local function reachable(id)
@@ -410,13 +462,14 @@ local function look_room()
 end
 
 local function go(dir)
-   if not dir then pc.print("Go where?"); return end
+   if not dir then pc.print("Go where?"); sfx.play("error"); return end
    local room = E(here())
    local dest = room.exits[dir]
-   if not dest then pc.print("You can't go " .. dir .. "."); return end
+   if not dest then pc.print("You can't go " .. dir .. "."); sfx.play("error"); return end
    for _, id in ipairs(contents(here())) do
       if E(id).guarding == dir then
          pc.print("The " .. P(E(id)).name .. " blocks the way " .. dir .. ".")
+         sfx.play("error")
          return
       end
    end
@@ -425,7 +478,16 @@ local function go(dir)
    if E(dest).win then
       pc.print("")
       pc.print("*** YOU ESCAPED THE TOWER ***")
-      running = false
+      sfx.play("win")
+      running = false; game_over = true
+   elseif E(dest).lose then
+      -- a fatal room: `lose` may be a custom death line, or just `true`
+      pc.print("")
+      pc.print(type(E(dest).lose) == "string" and E(dest).lose or "*** YOU DIED ***")
+      sfx.play("lose")
+      running = false; game_over = true
+   else
+      sfx.play("move")
    end
 end
 
@@ -434,6 +496,7 @@ local function apply(cmd)
    local id = find(cmd.noun)
    if not id then
       pc.print("You don't see any " .. (cmd.noun or "such thing") .. " here.")
+      sfx.play("error")
       return
    end
    local e = E(id)
@@ -447,6 +510,7 @@ local function apply(cmd)
       local react = P(other).react
       if react and react[cmd.verb] then
          react[cmd.verb](other, e, cmd)             -- self = target, other = item, cmd = full command
+         sfx.play(sfx.for_verb(cmd.verb))            -- the action still happened
          return                                      -- the reaction fully handled it
       end
    end
@@ -454,9 +518,11 @@ local function apply(cmd)
    local handler = P(e).verbs[cmd.verb]
    if not handler then
       pc.print("You can't " .. cmd.verb .. " the " .. P(e).name .. ".")
+      sfx.play("error")
       return
    end
    handler(e, other, cmd)                            -- handler(self, tool, cmd)
+   sfx.play(sfx.for_verb(cmd.verb))
 end
 
 local function tick_all()
@@ -534,11 +600,31 @@ local item_verbs = {
    end,
 }
 
+-- build the standard "unlock <thing> [with key]" handler shared by doors,
+-- windows and lockable containers. The key may be named explicitly or simply
+-- carried (held_key); naming the wrong item still fails.
+local function unlock_verb(keyid)
+   return function(e, tool)
+      if not e.locked then
+         pc.print("It's already unlocked.")
+         return
+      end
+      local key = tool or held_key(keyid)
+      if key and key.proto == keyid then
+         e.locked = false
+         pc.print("The key turns. The lock clicks open.")
+      else
+         pc.print("You need the right key to unlock it.")
+      end
+   end
+end
+
 local function room(spec)
    register(spec.id,
-      { name = spec.name or spec.id, desc = spec.desc, verbs = spec.verbs or {}, react = spec.react },
+      { name = spec.name or spec.id, desc = spec.desc, glimpse = spec.glimpse,
+        verbs = spec.verbs or {}, react = spec.react },
       nil,
-      { exits = spec.exits or {}, win = spec.win })
+      { exits = spec.exits or {}, win = spec.win, lose = spec.lose })
 end
 
 local function item(spec)
@@ -548,10 +634,12 @@ local function item(spec)
 end
 
 local function container(spec)
+   local keyid = spec.key or "key"           -- which item proto unlocks it (if locked)
    local verbs = merge({
       look = function(e) pc.print(text_of(e)) end,
+      unlock = unlock_verb(keyid),           -- "unlock chest [with key]" -- key optional
       open = function(e)
-         if e.locked then pc.print("It's locked."); return end
+         if e.locked then pc.print("It won't open -- it's locked."); return end
          if e.is_open then pc.print("It's already open."); return end
          e.is_open = true
          pc.print("You open the " .. P(e).name .. ".")
@@ -573,16 +661,7 @@ local function door(spec)
    local keyid = spec.key or "key"           -- which item proto unlocks it
    local verbs = {
       look = function(e) pc.print(text_of(e)) end,
-      unlock = function(e, tool)             -- a TWO-object verb: door + key
-         if not e.locked then
-            pc.print("It's already unlocked.")
-         elseif tool and tool.proto == keyid then
-            e.locked = false
-            pc.print("The key turns. The lock clicks open.")
-         else
-            pc.print("You need the right key to unlock it.")
-         end
-      end,
+      unlock = unlock_verb(keyid),           -- "unlock door [with key]" -- key optional
       open = function(e)
          if e.locked then
             pc.print("It won't budge -- it's locked.")
@@ -601,6 +680,53 @@ local function door(spec)
       else return "A heavy door, unlocked but still shut." end
    end
    register(spec.id, { name = spec.name or "door", desc = desc, verbs = verbs, react = spec.react },
+            spec.location, { locked = true, is_open = false })
+end
+
+local function window(spec)
+   local leads = spec.leads                  -- { dir =, to =, from = }
+   local keyid = spec.key or "key"           -- which item proto unlocks it
+   -- `barred = true` makes THIS window permanent scenery: no key unlocks it and
+   -- it never opens. Normal windows (barred omitted) keep the door-like behaviour.
+   local barred = spec.barred
+   -- the room you can see through the window. Defaults to wherever it leads, but
+   -- can be set explicitly (e.g. a barred window with no exit still has a view).
+   local overlooks = spec.overlooks or (leads and leads.to)
+   local verbs = {
+      look = function(e)
+         pc.print(text_of(e))
+         if overlooks and E(overlooks) then
+            pc.print("Through it: " .. glimpse_of(overlooks))   -- windows let you see beyond
+         end
+      end,
+      unlock = function(e, tool)             -- "unlock window [with key]" -- key optional
+         if barred then
+            pc.print("There's no lock -- just iron bars set fast in the stone.")
+            return
+         end
+         unlock_verb(keyid)(e, tool)         -- same keyed/keyless logic as doors
+      end,
+      open = function(e)
+         if barred then
+            pc.print("The bars hold fast. The window won't open.")
+         elseif e.locked then
+            pc.print("It won't budge -- it's locked.")
+         elseif e.is_open then
+            pc.print("It's already open.")
+         else
+            e.is_open = true
+            E(leads.from).exits[leads.dir] = leads.to       -- the exit now exists
+            pc.print("The " .. P(e).name .. " swings open, revealing the way " .. leads.dir .. ".")
+         end
+      end,
+   }
+   local desc = spec.desc or function(e)
+      if barred then return "A small window fitted with iron bars too narrow to pass." end
+      if e.is_open then return "An open window leads " .. leads.dir .. "."
+      elseif e.locked then return "A window blocks the way " .. leads.dir .. ", firmly locked."
+      else return "A window, unlocked but still shut." end
+   end
+   register(spec.id, { name = spec.name or "window", desc = desc, verbs = verbs, react = spec.react },
             spec.location, { locked = true, is_open = false })
 end
 
@@ -663,8 +789,15 @@ local function run()
          pc.print("Meta: look, inventory, save, load, quit.")
       else
          local cmd = cmd_parse(line)
-         if cmd then apply(cmd); tick_all() else pc.print("I don't understand that.") end
+         if cmd then apply(cmd); tick_all() else pc.print("I don't understand that."); sfx.play("error") end
       end
+   end
+
+   -- the win/lose message is printed but never followed by another input;
+   -- redraw it and wait for a key so the player can read the ending.
+   if game_over and pc.flush then
+      pc.flush()
+      pc.getkey()
    end
 end
 
@@ -675,6 +808,7 @@ M.room      = room
 M.item      = item
 M.container = container
 M.door      = door
+M.window    = window
 M.npc       = npc
 M.enemy     = enemy
 M.register  = register
@@ -700,6 +834,237 @@ local engine = require("engine")
 require("content.floor1")
 require("content.floor2")
 
+-- wrap the raw display in the boxed view (top 2/3 = responses, bottom = input).
+-- Must happen before run() so every pc.print/pc.input goes through the box.
+require("screen").install()
+
 engine.run()
+end
+__modules["screen"] = function()
+-- ===========================================================================
+-- screen.lua -- a boxed, buffered view over the raw pc display.
+-- ===========================================================================
+-- The game code keeps calling pc.print/pc.write exactly as before. This module
+-- WRAPS those functions so that, instead of streaming straight down the screen,
+-- output collects in a buffer and is drawn inside a box in the top 2/3 of the
+-- screen. The bottom third holds a second box where the player types commands.
+--
+-- There is no scrolling: each new response clears the box and redraws. The
+-- buffer is cleared lazily -- the first print of a NEW response wipes the old
+-- one -- so pressing Enter on an empty line just redraws the current screen
+-- rather than blanking it.
+--
+-- LUA REMINDER: we grab the ORIGINAL pc functions into locals first ("raw_*"),
+-- then replace pc.print/pc.write/pc.input/pc.cls with our own. Our versions
+-- call the raw ones to actually touch the hardware. Capturing them up front is
+-- what lets us override the public names without losing the real behaviour.
+-- ===========================================================================
+
+local M = {}
+
+-- the genuine display primitives, captured before we shadow the public names
+local raw_cls   = pc.cls
+local raw_print = pc.print
+local raw_write = pc.write
+local raw_input = pc.input
+local raw_at    = pc.at
+local raw_box   = pc.box
+
+-- --- layout geometry (computed once from the real screen size) -------------
+local COLS, ROWS = pc.size()                 -- 40 x 32 on the PicoCalc
+
+-- response box: the top two-thirds
+local RESP_X, RESP_Y = 1, 1
+local RESP_W = COLS
+local RESP_H = math.floor(ROWS * 2 / 3)      -- 21 rows (1..21)
+
+-- a 2-cell margin between the text and the box border, all the way around
+local MARGIN = 2
+local TEXT_X = RESP_X + 1 + MARGIN           -- col 4
+local TEXT_W = RESP_W - 2 * (1 + MARGIN)     -- 34 chars per line
+local TEXT_Y = RESP_Y + 1 + MARGIN           -- row 4
+local TEXT_H = RESP_H - 2 * (1 + MARGIN)     -- 15 text rows (4..18)
+
+-- input box: a thin box near the top of the bottom third
+local IN_X, IN_Y = 1, RESP_Y + RESP_H + 1    -- row 23 (one blank row below the response box)
+local IN_W, IN_H = COLS, 3                    -- rows 23..25
+local PROMPT_X = IN_X + 1 + MARGIN           -- col 4, lined up with the text
+local PROMPT_Y = IN_Y + 1                     -- row 24, the box interior
+
+-- --- output buffer ----------------------------------------------------------
+local buffer = {}        -- list of already-wrapped display lines
+local pending = nil      -- partial line built up by pc.write (no newline yet)
+local fresh = true       -- true => the next print starts a brand new response
+
+-- concatenate args the way the device's pc.print does: tostring, no separators
+local function joined(...)
+   local n = select("#", ...)
+   local parts = {}
+   for i = 1, n do parts[i] = tostring((select(i, ...))) end
+   return table.concat(parts)
+end
+
+-- word-wrap one logical line (which may contain \n) to TEXT_W columns,
+-- preserving any leading indentation on continuation lines.
+local function wrap(text)
+   local out = {}
+   for raw in (text .. "\n"):gmatch("(.-)\n") do      -- split on explicit newlines
+      raw = raw:gsub("\t", "   ")
+      if raw == "" then
+         out[#out + 1] = ""                            -- keep blank lines for spacing
+      else
+         local indent = raw:match("^(%s*)")
+         local line = nil
+         for word in raw:gmatch("%S+") do
+            if line == nil then
+               line = indent .. word
+            elseif #line + 1 + #word <= TEXT_W then
+               line = line .. " " .. word
+            else
+               out[#out + 1] = line
+               line = indent .. word                   -- wrapped piece keeps the indent
+            end
+            while #line > TEXT_W do                     -- a single over-long word: hard-split
+               out[#out + 1] = line:sub(1, TEXT_W)
+               line = indent .. line:sub(TEXT_W + 1)
+            end
+         end
+         out[#out + 1] = line
+      end
+   end
+   return out
+end
+
+-- append a chunk of text to the buffer, clearing first if a new response began
+local function append(text)
+   if fresh then buffer = {}; pending = nil; fresh = false end
+   if pending then text = pending .. text; pending = nil end
+   for _, l in ipairs(wrap(text)) do buffer[#buffer + 1] = l end
+end
+
+-- draw the boxes and the buffered text (showing the last TEXT_H lines)
+local function render()
+   raw_cls()
+   raw_box(RESP_X, RESP_Y, RESP_W, RESP_H)
+   raw_box(IN_X, IN_Y, IN_W, IN_H)
+
+   local n = #buffer
+   local first = math.max(1, n - TEXT_H + 1)            -- only the newest lines fit
+   local y = TEXT_Y
+   for i = first, n do
+      raw_at(TEXT_X, y)
+      raw_write(buffer[i])
+      y = y + 1
+   end
+end
+
+-- --- the wrapped public API -------------------------------------------------
+
+local function w_print(...)
+   append(joined(...))           -- wrap() supplies the line break; don't add one here
+end
+
+local function w_write(...)
+   if fresh then buffer = {}; pending = nil; fresh = false end
+   pending = (pending or "") .. joined(...)
+end
+
+local function w_cls()
+   buffer = {}; pending = nil; fresh = false
+   raw_cls()
+end
+
+-- pc.input([prompt]) -- a passed prompt is shown as a line in the RESPONSE box
+-- (it's part of the conversation); the caret is drawn in the input box. The
+-- default "> " command prompt is treated as a plain caret, not response text.
+local function w_input(prompt)
+   if prompt and prompt ~= "" and prompt ~= "> " then
+      append(tostring(prompt))
+   end
+   render()
+   raw_at(PROMPT_X, PROMPT_Y)
+   raw_write("> ")
+   local line = raw_input()              -- read at the caret (device echoes here)
+   fresh = true                          -- next print opens a fresh response
+   return line
+end
+
+-- pc.flush() -- redraw the current buffer (for end-of-game messages that are
+-- printed but never followed by another input). Returns true if it drew text.
+local function w_flush()
+   if #buffer == 0 then return false end
+   render()
+   return true
+end
+
+-- M.install() -- shadow the public pc functions with the boxed versions.
+function M.install()
+   pc.print = w_print
+   pc.write = w_write
+   pc.cls   = w_cls
+   pc.input = w_input
+   pc.flush = w_flush
+end
+
+return M
+end
+__modules["sound"] = function()
+-- ===========================================================================
+-- sound.lua -- short 2-3 tone "stingers" tied to player actions.
+-- ===========================================================================
+-- The device plays one blocking tone at a time via pc.tone(freq_hz, ms).
+-- A stinger is just a little list of {freq, ms} notes we play back to back
+-- (a freq of 0 is silence, handy for a gap). Each note BLOCKS until it ends,
+-- so a stinger takes about the sum of its note durations -- keep them short.
+--
+-- LUA REMINDER: this file builds a table `M`, fills in a couple of functions,
+-- and ends with `return M`. The build shim caches it, so every `require
+-- ("sound")` hands back this same table.
+-- ===========================================================================
+
+local M = {}
+
+-- name -> sequence of { frequency_hz, duration_ms } notes.
+-- Frequencies are rough musical pitches (C5â‰ˆ523, G5â‰ˆ784, etc.); the exact
+-- values matter less than the shape (rising = good, falling/low = bad).
+local stingers = {
+   move   = { { 392, 55 }, { 523, 55 } },                 -- two quick rising steps
+   take   = { { 523, 40 }, { 659, 55 } },                 -- bright pickup blip
+   drop   = { { 494, 40 }, { 330, 60 } },                 -- soft drop down
+   open   = { { 523, 40 }, { 784, 90 } },                 -- unlock/open: bright success
+   throw  = { { 784, 40 }, { 392, 70 } },                 -- whoosh downward
+   talk   = { { 440, 40 }, { 554, 40 }, { 440, 45 } },    -- chatter
+   attack = { { 147, 60 }, { 110, 90 } },                 -- low thud
+   eat    = { { 330, 40 }, { 262, 70 } },                 -- gulp down
+   error  = { { 220, 70 }, { 165, 120 } },                -- low descending buzz
+   win    = { { 523, 90 }, { 659, 90 }, { 784, 200 } },   -- rising fanfare
+   lose   = { { 392, 130 }, { 330, 130 }, { 196, 280 } }, -- falling dirge
+   ok     = { { 523, 40 }, { 659, 50 } },                 -- generic confirm
+}
+
+-- canonical verb (from the engine's verb_canon) -> stinger name.
+-- Anything not listed falls back to "ok" via M.for_verb below.
+local verb_sound = {
+   go = "move",
+   take = "take", drop = "drop", throw = "throw",
+   open = "open", close = "open", unlock = "open", lock = "open",
+   talk = "talk", attack = "attack", eat = "eat",
+   look = "ok", read = "ok", use = "ok",
+}
+
+-- M.play(name) -- play a stinger by name (unknown names play "ok").
+function M.play(name)
+   local seq = stingers[name] or stingers.ok
+   for _, note in ipairs(seq) do
+      pc.tone(note[1], note[2])           -- blocks until this note finishes
+   end
+end
+
+-- M.for_verb(verb) -- map a canonical verb to its stinger name.
+function M.for_verb(verb)
+   return verb_sound[verb] or "ok"
+end
+
+return M
 end
 require("main")

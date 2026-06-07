@@ -12,7 +12,7 @@ g.register("player", { name = "you", verbs = {} }, "cell", {})
 
 g.room {
    id = "cell",
-   desc = "A damp stone cell. A heavy door is set in the north wall.",
+   desc = "A damp stone cell. A heavy door is set in the north wall. A small, barred window allows a meager bit of light to shine into the cell.",
    exits = {},                  -- north appears only once the door is opened
 }
 g.room {
@@ -27,9 +27,36 @@ g.item {
 }
 
 g.door {
-   id = "door", name = "door", location = "cell",
+   id = "celldoor", name = "door", location = "cell",
    leads = { dir = "north", to = "hall", from = "cell" },
    -- key defaults to the item proto "key"
+}
+
+g.window {
+   id = "cellwindow", name = "window", location = "cell",
+   barred = true,                            -- permanent scenery: no key opens it, it never opens
+   overlooks = "void",                       -- you can still SEE through the bars (see void's glimpse)
+   -- The window is barred. react[verb] fires when the window is the TARGET of a
+   -- verb -- e.g. "push key through window" or "throw key at window" (push/shove
+   -- are parsed as throw). self = the window, projectile = the thing pushed.
+   -- Small items slip between the bars and fall into the void, unrecoverable.
+   react = {
+      throw = function(self, projectile)
+         projectile.location = "void"          -- the void is a fatal drop; nothing comes back
+         pc.print("You slip the " .. g.P(projectile).name ..
+                  " between the bars. It tumbles away into the dark below, gone for good.")
+      end,
+   },
+}
+
+g.room {
+   id = "void",
+   desc = "Beyond the bars is only open air -- a sheer drop down the tower's outer wall to the courtyard stones far, far below.",
+   -- the short version shown when peering through the cell window (see g.window overlooks)
+   glimpse = "open air, and a sheer drop down the tower wall to the courtyard far below.",
+   -- entering this room ends the game (see the `lose` handling in engine go()).
+   lose = "*** You squeeze past the bars and plummet from the tower. YOU DIED ***",
+   exits = {},
 }
 
 g.item {
@@ -44,12 +71,12 @@ g.item {
          if #g.contents(self.id) > 0 then
             pc.print("You tear the bread open revealing a key! Weird.")
          else
-            pc.print("You continue to tear into the bread. Alas, there is nothing left to find")
+            pc.print("You continue to tear into the bread. Alas, there is nothing left to find.")
          end
       end,
       eat = function(self)
          if #g.contents(self.id) > 0 then
-            pc.print("You bite the hard loaf, but something even harder is inside")
+            pc.print("You bite the hard loaf, but something even harder is inside.")
             return
          end
          self.location = nil                  -- consumed -> in no container -> gone

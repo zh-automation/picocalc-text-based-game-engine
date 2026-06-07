@@ -8,4 +8,8 @@ local engine = require("engine")
 require("content.floor1")
 require("content.floor2")
 
+-- wrap the raw display in the boxed view (top 2/3 = responses, bottom = input).
+-- Must happen before run() so every pc.print/pc.input goes through the box.
+require("screen").install()
+
 engine.run()

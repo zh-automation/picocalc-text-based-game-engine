@@ -10,6 +10,7 @@
 -- ===========================================================================
 
 local M = {}                      -- the api we hand back at the bottom
+local sfx = require("sound")      -- action stingers (2-3 tone cues)
 
 -- ---------------------------------------------------------------------------
 -- 1. WORD TABLES (typed word -> canonical word; membership is an O(1) lookup)
@@ -30,6 +31,7 @@ local verb_canon = {              -- action synonym -> canonical verb
    take = "take", get = "take", grab = "take", pick = "take",
    drop = "drop",
    throw = "throw", toss = "throw", chuck = "throw",
+   push = "throw", shove = "throw", slip = "throw",   -- push/shove route through the same handler as throw
    open = "open", close = "close", shut = "close",
    unlock = "unlock", lock = "lock",
    eat = "eat", drink = "eat",
@@ -43,6 +45,7 @@ local filler = {                  -- little words ignored entirely
 local prep = {                    -- prepositions that introduce a 2nd object
    with = true, using = true, at = true, to = true,
    on = true, onto = true, into = true, ["in"] = true,   -- "in" is a keyword, so quote it
+   through = true, thru = true,                          -- "push X through window"
 }
 
 -- ---------------------------------------------------------------------------
@@ -143,6 +146,7 @@ local protos = {}
 local placements = {}
 local world = {}
 local running = true
+local game_over = false           -- set on win/lose so run() holds the final screen
 local SLOT = "ett.slot1"
 
 local function E(id)  return world.entities[id] end     -- entity row by id
@@ -154,12 +158,33 @@ local function text_of(e)
    if type(d) == "function" then return d(e) else return d end
 end
 
+-- a short "seen from a distance" view of a room (e.g. through a window): the
+-- author's `glimpse` text if set, otherwise just the first sentence of the
+-- full description, so the view is always limited rather than the whole room.
+local function glimpse_of(roomid)
+   local r = E(roomid)
+   if not r then return nil end
+   local g = P(r).glimpse
+   if g then return type(g) == "function" and g(r) or g end
+   local full = text_of(r)
+   return full:match("^[^.]*%.") or full          -- text up to (and incl.) the first period
+end
+
 local function contents(cid)
    local out = {}
    for id, e in pairs(world.entities) do
       if e.location == cid then out[#out + 1] = id end
    end
    return out
+end
+
+-- a carried item whose proto matches keyid, or nil. Lets locks be opened with
+-- "unlock <thing>" (no "with <key>") as long as the right key is in hand.
+local function held_key(keyid)
+   for _, id in ipairs(contents("player")) do
+      if E(id).proto == keyid then return E(id) end
+   end
+   return nil
 end
 
 local function reachable(id)
@@ -225,13 +250,14 @@ local function look_room()
 end
 
 local function go(dir)
-   if not dir then pc.print("Go where?"); return end
+   if not dir then pc.print("Go where?"); sfx.play("error"); return end
    local room = E(here())
    local dest = room.exits[dir]
-   if not dest then pc.print("You can't go " .. dir .. "."); return end
+   if not dest then pc.print("You can't go " .. dir .. "."); sfx.play("error"); return end
    for _, id in ipairs(contents(here())) do
       if E(id).guarding == dir then
          pc.print("The " .. P(E(id)).name .. " blocks the way " .. dir .. ".")
+         sfx.play("error")
          return
       end
    end
@@ -240,7 +266,16 @@ local function go(dir)
    if E(dest).win then
       pc.print("")
       pc.print("*** YOU ESCAPED THE TOWER ***")
-      running = false
+      sfx.play("win")
+      running = false; game_over = true
+   elseif E(dest).lose then
+      -- a fatal room: `lose` may be a custom death line, or just `true`
+      pc.print("")
+      pc.print(type(E(dest).lose) == "string" and E(dest).lose or "*** YOU DIED ***")
+      sfx.play("lose")
+      running = false; game_over = true
+   else
+      sfx.play("move")
    end
 end
 
@@ -249,6 +284,7 @@ local function apply(cmd)
    local id = find(cmd.noun)
    if not id then
       pc.print("You don't see any " .. (cmd.noun or "such thing") .. " here.")
+      sfx.play("error")
       return
    end
    local e = E(id)
@@ -262,6 +298,7 @@ local function apply(cmd)
       local react = P(other).react
       if react and react[cmd.verb] then
          react[cmd.verb](other, e, cmd)             -- self = target, other = item, cmd = full command
+         sfx.play(sfx.for_verb(cmd.verb))            -- the action still happened
          return                                      -- the reaction fully handled it
       end
    end
@@ -269,9 +306,11 @@ local function apply(cmd)
    local handler = P(e).verbs[cmd.verb]
    if not handler then
       pc.print("You can't " .. cmd.verb .. " the " .. P(e).name .. ".")
+      sfx.play("error")
       return
    end
    handler(e, other, cmd)                            -- handler(self, tool, cmd)
+   sfx.play(sfx.for_verb(cmd.verb))
 end
 
 local function tick_all()
@@ -349,11 +388,31 @@ local item_verbs = {
    end,
 }
 
+-- build the standard "unlock <thing> [with key]" handler shared by doors,
+-- windows and lockable containers. The key may be named explicitly or simply
+-- carried (held_key); naming the wrong item still fails.
+local function unlock_verb(keyid)
+   return function(e, tool)
+      if not e.locked then
+         pc.print("It's already unlocked.")
+         return
+      end
+      local key = tool or held_key(keyid)
+      if key and key.proto == keyid then
+         e.locked = false
+         pc.print("The key turns. The lock clicks open.")
+      else
+         pc.print("You need the right key to unlock it.")
+      end
+   end
+end
+
 local function room(spec)
    register(spec.id,
-      { name = spec.name or spec.id, desc = spec.desc, verbs = spec.verbs or {}, react = spec.react },
+      { name = spec.name or spec.id, desc = spec.desc, glimpse = spec.glimpse,
+        verbs = spec.verbs or {}, react = spec.react },
       nil,
-      { exits = spec.exits or {}, win = spec.win })
+      { exits = spec.exits or {}, win = spec.win, lose = spec.lose })
 end
 
 local function item(spec)
@@ -363,10 +422,12 @@ local function item(spec)
 end
 
 local function container(spec)
+   local keyid = spec.key or "key"           -- which item proto unlocks it (if locked)
    local verbs = merge({
       look = function(e) pc.print(text_of(e)) end,
+      unlock = unlock_verb(keyid),           -- "unlock chest [with key]" -- key optional
       open = function(e)
-         if e.locked then pc.print("It's locked."); return end
+         if e.locked then pc.print("It won't open -- it's locked."); return end
          if e.is_open then pc.print("It's already open."); return end
          e.is_open = true
          pc.print("You open the " .. P(e).name .. ".")
@@ -388,16 +449,7 @@ local function door(spec)
    local keyid = spec.key or "key"           -- which item proto unlocks it
    local verbs = {
       look = function(e) pc.print(text_of(e)) end,
-      unlock = function(e, tool)             -- a TWO-object verb: door + key
-         if not e.locked then
-            pc.print("It's already unlocked.")
-         elseif tool and tool.proto == keyid then
-            e.locked = false
-            pc.print("The key turns. The lock clicks open.")
-         else
-            pc.print("You need the right key to unlock it.")
-         end
-      end,
+      unlock = unlock_verb(keyid),           -- "unlock door [with key]" -- key optional
       open = function(e)
          if e.locked then
             pc.print("It won't budge -- it's locked.")
@@ -416,6 +468,53 @@ local function door(spec)
       else return "A heavy door, unlocked but still shut." end
    end
    register(spec.id, { name = spec.name or "door", desc = desc, verbs = verbs, react = spec.react },
+            spec.location, { locked = true, is_open = false })
+end
+
+local function window(spec)
+   local leads = spec.leads                  -- { dir =, to =, from = }
+   local keyid = spec.key or "key"           -- which item proto unlocks it
+   -- `barred = true` makes THIS window permanent scenery: no key unlocks it and
+   -- it never opens. Normal windows (barred omitted) keep the door-like behaviour.
+   local barred = spec.barred
+   -- the room you can see through the window. Defaults to wherever it leads, but
+   -- can be set explicitly (e.g. a barred window with no exit still has a view).
+   local overlooks = spec.overlooks or (leads and leads.to)
+   local verbs = {
+      look = function(e)
+         pc.print(text_of(e))
+         if overlooks and E(overlooks) then
+            pc.print("Through it: " .. glimpse_of(overlooks))   -- windows let you see beyond
+         end
+      end,
+      unlock = function(e, tool)             -- "unlock window [with key]" -- key optional
+         if barred then
+            pc.print("There's no lock -- just iron bars set fast in the stone.")
+            return
+         end
+         unlock_verb(keyid)(e, tool)         -- same keyed/keyless logic as doors
+      end,
+      open = function(e)
+         if barred then
+            pc.print("The bars hold fast. The window won't open.")
+         elseif e.locked then
+            pc.print("It won't budge -- it's locked.")
+         elseif e.is_open then
+            pc.print("It's already open.")
+         else
+            e.is_open = true
+            E(leads.from).exits[leads.dir] = leads.to       -- the exit now exists
+            pc.print("The " .. P(e).name .. " swings open, revealing the way " .. leads.dir .. ".")
+         end
+      end,
+   }
+   local desc = spec.desc or function(e)
+      if barred then return "A small window fitted with iron bars too narrow to pass." end
+      if e.is_open then return "An open window leads " .. leads.dir .. "."
+      elseif e.locked then return "A window blocks the way " .. leads.dir .. ", firmly locked."
+      else return "A window, unlocked but still shut." end
+   end
+   register(spec.id, { name = spec.name or "window", desc = desc, verbs = verbs, react = spec.react },
             spec.location, { locked = true, is_open = false })
 end
 
@@ -478,8 +577,15 @@ local function run()
          pc.print("Meta: look, inventory, save, load, quit.")
       else
          local cmd = cmd_parse(line)
-         if cmd then apply(cmd); tick_all() else pc.print("I don't understand that.") end
+         if cmd then apply(cmd); tick_all() else pc.print("I don't understand that."); sfx.play("error") end
       end
+   end
+
+   -- the win/lose message is printed but never followed by another input;
+   -- redraw it and wait for a key so the player can read the ending.
+   if game_over and pc.flush then
+      pc.flush()
+      pc.getkey()
    end
 end
 
@@ -490,6 +596,7 @@ M.room      = room
 M.item      = item
 M.container = container
 M.door      = door
+M.window    = window
 M.npc       = npc
 M.enemy     = enemy
 M.register  = register

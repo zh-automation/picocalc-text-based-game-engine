@@ -41,21 +41,64 @@ end
 pc = {}
 
 -- --- screen ---------------------------------------------------------------
+-- These mirror the device's game_api.c, which drives an ANSI terminal. Emitting
+-- the same escape sequences lets the boxed layout render in an ANSI terminal
+-- (e.g. Windows Terminal) exactly as it does on the PicoCalc.
+local COLS, ROWS = 40, 32
+
 function pc.cls()
-   io.write("\27[2J\27[H")        -- ANSI clear + home (Windows Terminal/most shells)
+   io.write("\27[2J\27[H")        -- ANSI clear + home
    io.flush()
 end
-function pc.print(...) io.write(joined(...), "\n") end
-function pc.write(...) io.write(joined(...)) end
-function pc.center(y, text) pc.print(text) end          -- ignore positioning here
-function pc.at() end
-function pc.color() end
-function pc.fg() end
-function pc.bg() end
-function pc.reset() end
-function pc.cursor() end
-function pc.box() end
-function pc.size() return 40, 32 end
+function pc.print(...) io.write(joined(...), "\n"); io.flush() end
+function pc.write(...) io.write(joined(...)); io.flush() end
+
+-- pc.at(x, y) -- move the cursor to column x, row y (1-based). ANSI is row;col.
+function pc.at(x, y)
+   io.write(string.format("\27[%d;%dH", y, x))
+   io.flush()
+end
+
+-- pc.center(y, text) -- print text horizontally centred on row y.
+function pc.center(y, text)
+   local x = math.floor((COLS - #text) / 2) + 1
+   if x < 1 then x = 1 end
+   io.write(string.format("\27[%d;%dH", y, x), text)
+   io.flush()
+end
+
+-- map a 0-15 palette index to its ANSI SGR foreground/background code
+local function ansi_fg(i) i = math.max(0, math.min(15, i)); return (i >= 8) and (90 + i - 8) or (30 + i) end
+local function ansi_bg(i) i = math.max(0, math.min(15, i)); return (i >= 8) and (100 + i - 8) or (40 + i) end
+
+function pc.color(fg, bg)
+   io.write(string.format("\27[%dm", ansi_fg(fg)))
+   if bg then io.write(string.format("\27[%dm", ansi_bg(bg))) end
+   io.flush()
+end
+function pc.fg(r, g, b) io.write(string.format("\27[38;2;%d;%d;%dm", r, g, b)); io.flush() end
+function pc.bg(r, g, b) io.write(string.format("\27[48;2;%d;%d;%dm", r, g, b)); io.flush() end
+function pc.reset() io.write("\27[0m"); io.flush() end
+function pc.cursor(on) io.write(on and "\27[?25h" or "\27[?25l"); io.flush() end
+
+-- pc.box(x, y, w, h) -- draw a box border using the DEC line-drawing charset,
+-- the same way the device does (ESC(0 ... l q k / x / m q j ... ESC(B).
+function pc.box(x, y, w, h)
+   if w < 2 or h < 2 then return end
+   local clips = (y + h - 1 >= ROWS) and (x + w - 1 >= COLS)
+   io.write("\27(0")                               -- select DEC special graphics
+   io.write(string.format("\27[%d;%dH", y, x), "l", string.rep("q", w - 2), "k")
+   for r = y + 1, y + h - 2 do
+      io.write(string.format("\27[%d;%dHx", r, x))
+      io.write(string.format("\27[%d;%dHx", r, x + w - 1))
+   end
+   io.write(string.format("\27[%d;%dH", y + h - 1, x), "m", string.rep("q", w - 2))
+   if not clips then io.write("j") end
+   io.write("\27(B")                               -- back to ASCII
+   io.flush()
+end
+
+function pc.size() return COLS, ROWS end
 
 -- --- keyboard --------------------------------------------------------------
 function pc.input(prompt)
