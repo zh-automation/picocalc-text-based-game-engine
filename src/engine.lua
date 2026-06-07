@@ -112,7 +112,11 @@ local function cmd_parse(input)
          if prep[w] then                       -- "with/at/to/on/into..." -> the 2nd object
             i = i + 1
             while i <= #words and filler[words[i]] do i = i + 1 end
-            cmd.tool = words[i]; i = i + 1
+            local obj = words[i]; i = i + 1
+            -- the 2nd object can be a direction ("throw bread to the north") or an entity
+            if obj and dir_canon[obj] then cmd.dir = dir_canon[obj] else cmd.tool = obj end
+         elseif dir_canon[w] then              -- a bare direction ("throw bread north") is a target too
+            cmd.dir = dir_canon[w]; i = i + 1
          elseif filler[w] then
             i = i + 1
          else
@@ -257,7 +261,7 @@ local function apply(cmd)
    if other then
       local react = P(other).react
       if react and react[cmd.verb] then
-         react[cmd.verb](other, e)                  -- self = target, other = the item/tool
+         react[cmd.verb](other, e, cmd)             -- self = target, other = item, cmd = full command
          return                                      -- the reaction fully handled it
       end
    end
@@ -267,7 +271,7 @@ local function apply(cmd)
       pc.print("You can't " .. cmd.verb .. " the " .. P(e).name .. ".")
       return
    end
-   handler(e, other)                                 -- handler(self, tool)
+   handler(e, other, cmd)                            -- handler(self, tool, cmd)
 end
 
 local function tick_all()
@@ -322,7 +326,27 @@ local item_verbs = {
    look  = function(e) pc.print(text_of(e)) end,
    take  = function(e) e.location = "player"; pc.print("You take the " .. P(e).name .. ".") end,
    drop  = function(e) e.location = here();   pc.print("You drop the " .. P(e).name .. ".") end,
-   throw = function(e) e.location = "void";   pc.print("You hurl the " .. P(e).name .. " out the window. Gone for good.") end,
+   -- throw lands the item at the TARGET's location: a direction -> the adjacent
+   -- room; an entity -> wherever it is; nothing -> just at your feet.
+   throw = function(e, target, cmd)
+      local name = P(e).name
+      if cmd and cmd.dir then
+         local dest = E(here()).exits[cmd.dir]
+         if dest then
+            e.location = dest
+            pc.print("You hurl the " .. name .. " " .. cmd.dir .. ".")
+         else
+            e.location = here()
+            pc.print("There's no way " .. cmd.dir .. "; the " .. name .. " bounces back.")
+         end
+      elseif target then
+         e.location = target.location
+         pc.print("You throw the " .. name .. " at the " .. P(target).name .. ".")
+      else
+         e.location = here()
+         pc.print("You toss the " .. name .. " aside.")
+      end
+   end,
 }
 
 local function room(spec)

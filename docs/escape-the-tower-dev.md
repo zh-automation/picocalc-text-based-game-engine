@@ -168,10 +168,14 @@ this way).
 ### Verb handlers
 
 A verb is a function stored under its canonical name in the entity's `verbs`
-table. It is called as `handler(self, tool)`:
+table. It is called as `handler(self, tool, cmd)`:
 
 - `self` — the entity row the verb acts on (read and mutate its state here).
-- `tool` — the second object in `"unlock door with key"` (may be `nil`).
+- `tool` — the resolved indirect-object entity (`"unlock door with key"` → the
+  key); `nil` if there wasn't one.
+- `cmd` — the full parsed command, for the rare verb that needs more than
+  `tool`. Notably `cmd.dir` holds a direction target (`"throw bread north"` →
+  `cmd.dir == "north"`); also `cmd.verb` / `cmd.noun`. Most verbs ignore it.
 
 ```lua
 g.item {
@@ -235,8 +239,9 @@ guard`. There are two ways those resolve, in this order:
 
 1. **The target reacts.** If the indirect object has a `react` entry for the
    verb, it runs and *fully handles* the action — the direct object's verb is
-   skipped. `react` is a map of verb → `function(self, other)`, where `self` is
-   the target and `other` is the direct object (the thing thrown/given/used).
+   skipped. `react` is a map of verb → `function(self, other, cmd)`, where
+   `self` is the target, `other` is the direct object (the thing
+   thrown/given/used), and `cmd` is the full command.
 
    ```lua
    g.npc {
@@ -251,18 +256,34 @@ guard`. There are two ways those resolve, in this order:
    }
    ```
 
-   Now `throw bread at prisoner` triggers this instead of the bread's default
-   "out the window" throw. Any entity can carry a `react` table; it's how you
-   handle "weird interactions" without special-casing the engine.
+   Now `throw bread at prisoner` triggers this instead of the bread's normal
+   throw. Any entity can carry a `react` table; it's how you handle "weird
+   interactions" without special-casing the engine.
 
-2. **The direct object's verb runs**, receiving the indirect object as its
-   second argument: `handler(self, tool)`. This is how `door.unlock(self, key)`
-   reads the key. If the target had no matching `react`, this is what happens.
+2. **The direct object's verb runs**, receiving the indirect object and command:
+   `handler(self, tool, cmd)`. This is how `door.unlock(self, key)` reads the
+   key. If the target had no matching `react`, this is what happens.
 
 So with no target (`throw bread`) you get the item's own `throw`; with a target
 that doesn't care (`unlock door with key` — keys have no `react`) you get the
 direct object's verb and the tool; with a target that *does* care (`throw bread
 at prisoner`) the target's reaction wins.
+
+### How the built-in `throw` uses this
+
+The default item `throw` lands the item at the **target's location**:
+
+- `throw bread north` — a direction target (`cmd.dir`); the bread goes to the
+  room that exit leads to, or bounces back to your feet if there's no exit that
+  way. It never assumes a window.
+- `throw bread at goblin` — an entity target with no `react`; the bread lands
+  wherever that entity is.
+- `throw bread` — no target; it drops at your feet (your current room).
+
+To make something destroy a thrown item ("out the window"), give that feature a
+`react.throw` that sets the projectile's `location = "void"` — e.g. a `window`
+entity in rooms that have one. That keeps the soft-lock available where it makes
+narrative sense, instead of everywhere.
 
 > Reactions are for being the **target** of an action involving another object.
 > Single-object oddities (`push statue`) are just ordinary verbs on that object.
@@ -332,9 +353,12 @@ pure data, this just works — including opened doors, moved items, dialog
 progress, and flags.
 
 **Soft-locks are allowed on purpose.** There are deliberately no guard rails
-preventing an unwinnable state: eat the bait you needed, or throw the only key
-out the window, and the game lets you. This is a narrative choice — verbs freely
-set `location = nil`/`"void"`, and nothing stops them.
+preventing an unwinnable state: eat the bait you needed (`eat` sets
+`location = nil`), or toss a needed item into a `"void"` via something like a
+`window` entity's `react.throw`, and the game lets you. This is a narrative
+choice — verbs freely orphan an item's `location`, and nothing stops them.
+(Note the built-in `throw` itself is non-destructive — it relocates to an
+adjacent room or your feet; destruction is opt-in per feature.)
 
 ## Adding a new floor
 
